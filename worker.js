@@ -167,6 +167,30 @@ async function sendDueReminders(env) {
   return { date, hm, log };
 }
 
+/** Fallback for while the webhook is not set up yet (a fresh workers.dev
+ *  subdomain can take hours to resolve from Telegram's side). Once the
+ *  webhook is live this returns 409 and quietly does nothing. */
+async function pollUpdates(env) {
+  const log = [];
+  const lastId = parseInt((await env.STATE.get("lastUpdateId")) || "0", 10);
+  const res = await tg(env, "getUpdates", { offset: lastId + 1, timeout: 0 });
+
+  if (!res || !res.ok) return log; // 409 while a webhook is active - fine.
+
+  let maxId = lastId;
+  for (const u of res.result || []) {
+    if (u.update_id > maxId) maxId = u.update_id;
+    try {
+      await handleUpdate(env, u);
+      log.push("polled update " + u.update_id);
+    } catch (e) {
+      log.push("update " + u.update_id + " failed: " + e.message);
+    }
+  }
+  if (maxId !== lastId) await env.STATE.put("lastUpdateId", String(maxId));
+  return log;
+}
+
 /** Webhook: one update, handled immediately. */
 async function handleUpdate(env, update) {
   const msg = update.message;
@@ -212,9 +236,19 @@ async function handleUpdate(env, update) {
   }]);
 }
 
+async function tick(env) {
+  const result = await sendDueReminders(env);
+  try {
+    result.log.push(...(await pollUpdates(env)));
+  } catch (e) {
+    result.log.push("poll failed: " + e.message);
+  }
+  return result;
+}
+
 export default {
   async scheduled(event, env, ctx) {
-    ctx.waitUntil(sendDueReminders(env));
+    ctx.waitUntil(tick(env));
   },
 
   async fetch(request, env) {
@@ -234,10 +268,10 @@ export default {
       return new Response("ok");
     }
 
-    // Manual reminder tick, handy for testing.
+    // Manual tick, handy for testing.
     if (url.searchParams.get("run") === "1") {
       try {
-        return Response.json(await sendDueReminders(env));
+        return Response.json(await tick(env));
       } catch (e) {
         return new Response("error: " + e.message, { status: 500 });
       }
