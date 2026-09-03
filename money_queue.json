@@ -1,1 +1,10 @@
-[]
+[
+  {
+    "id": "q_mtlfpzts_dw2u",
+    "direction": "out",
+    "amount": 1,
+    "note": "тест",
+    "date": "2026-09-03",
+    "createdAt": "2026-09-03T11:21:34.884Z"
+  }
+]
