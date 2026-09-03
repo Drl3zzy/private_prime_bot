@@ -2,16 +2,17 @@
  * Prime habit bot - Cloudflare Worker.
  *
  * Two entry points:
- *   - cron (every minute): sends a reminder for every habit in habits.json
- *     whose time has come today,
- *   - webhook (POST from Telegram): handles /start and Da/Net button presses
- *     the instant they happen, and appends answers to answers.json.
+ *   - cron (every minute): sends reminders for habits that are due today
+ *     according to their schedule, and one evening summary,
+ *   - webhook (POST from Telegram): handles /start, Da/Net/Skip button
+ *     presses, the follow-up "why not" question, and one-line money entries.
  *
- * An hourly Claude Code routine then copies answers.json into Prime's
- * habit_logs. Nothing here talks to Prime directly.
+ * Everything it writes goes into this repo as JSON. An hourly Claude Code
+ * routine carries answers.json and money_queue.json into Prime's database.
+ * Nothing here talks to Prime directly.
  *
  * Bindings it expects:
- *   STATE               - KV namespace (asked flags, chat id)
+ *   STATE               - KV namespace (asked flags, chat id, summary flag)
  *   TELEGRAM_BOT_TOKEN  - secret, token from @BotFather
  *   GITHUB_TOKEN        - secret, fine-grained PAT with Contents: read and write
  *
@@ -21,10 +22,18 @@
 
 const REPO = "Drl3zzy/private_prime_bot";
 const TZ = "Europe/Budapest";
+const SUMMARY_TIME = "21:30";
 
 // Fallback so reminders work before anyone has sent /start.
 // Already public in this repo's history.
 const DEFAULT_CHAT_ID = "1057229070";
+
+const REASONS = [
+  { code: "forgot", label: "Забыл", text: "забыл" },
+  { code: "notime", label: "Не было времени", text: "не было времени" },
+  { code: "sick", label: "Болел", text: "болел" },
+  { code: "other", label: "Другое", text: "другое" }
+];
 
 function nowParts() {
   const parts = new Intl.DateTimeFormat("en-CA", {
@@ -35,6 +44,18 @@ function nowParts() {
   const p = {};
   for (const { type, value } of parts) p[type] = value;
   return { date: `${p.year}-${p.month}-${p.day}`, hm: `${p.hour}:${p.minute}` };
+}
+
+function dateFromStr(s) { const p = String(s).split("-"); return new Date(+p[0], +p[1] - 1, +p[2]); }
+function shiftDate(s, days) {
+  const d = dateFromStr(s);
+  d.setDate(d.getDate() + days);
+  return d.getFullYear() + "-" + ("0" + (d.getMonth() + 1)).slice(-2) + "-" + ("0" + d.getDate()).slice(-2);
+}
+function weekStartOf(s) {
+  const d = dateFromStr(s);
+  d.setDate(d.getDate() - ((d.getDay() + 6) % 7));
+  return d.getFullYear() + "-" + ("0" + (d.getMonth() + 1)).slice(-2) + "-" + ("0" + d.getDate()).slice(-2);
 }
 
 async function tg(env, method, body) {
@@ -70,18 +91,22 @@ function strToB64(str) {
   return btoa(bin);
 }
 
-async function loadHabits() {
-  const res = await fetch(
-    `https://raw.githubusercontent.com/${REPO}/main/habits.json?t=${Date.now()}`,
-    { cf: { cacheTtl: 0 } }
-  );
-  if (!res.ok) throw new Error("habits.json: HTTP " + res.status);
-  return res.json();
+async function loadRepoJson(path, fallback) {
+  try {
+    const res = await fetch(
+      `https://raw.githubusercontent.com/${REPO}/main/${path}?t=${Date.now()}`,
+      { cf: { cacheTtl: 0 } }
+    );
+    if (!res.ok) return fallback;
+    return await res.json();
+  } catch (e) {
+    return fallback;
+  }
 }
 
-/** One answer per habit per day wins - pressing the button twice is a no-op. */
-async function appendAnswers(env, added) {
-  const url = `https://api.github.com/repos/${REPO}/contents/answers.json`;
+/** Read-modify-write of a JSON array file in the repo, with retry on conflict. */
+async function updateRepoJson(env, path, mutate) {
+  const url = `https://api.github.com/repos/${REPO}/contents/${path}`;
   const headers = {
     Authorization: `Bearer ${env.GITHUB_TOKEN}`,
     Accept: "application/vnd.github+json",
@@ -90,72 +115,93 @@ async function appendAnswers(env, added) {
 
   for (let attempt = 0; attempt < 3; attempt++) {
     const cur = await fetch(`${url}?ref=main&t=${Date.now()}`, { headers });
-    if (!cur.ok) throw new Error("read answers.json: HTTP " + cur.status);
-    const meta = await cur.json();
-
-    let existing = [];
-    try {
-      existing = JSON.parse(b64ToStr(meta.content) || "[]");
-    } catch (e) {
-      existing = [];
+    let existing = [], sha = undefined;
+    if (cur.ok) {
+      const meta = await cur.json();
+      sha = meta.sha;
+      try { existing = JSON.parse(b64ToStr(meta.content) || "[]"); } catch (e) { existing = []; }
+    } else if (cur.status !== 404) {
+      throw new Error("read " + path + ": HTTP " + cur.status);
     }
 
-    const seen = new Set(existing.map((a) => `${a.habitId}|${a.date}`));
-    const fresh = [];
-    for (const a of added) {
-      const key = `${a.habitId}|${a.date}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      fresh.push(a);
-    }
-    if (!fresh.length) return;
+    const next = mutate(existing);
+    if (!next) return; // nothing to write
 
-    const body = JSON.stringify(existing.concat(fresh), null, 2) + "\n";
     const put = await fetch(url, {
       method: "PUT",
       headers: { ...headers, "Content-Type": "application/json" },
       body: JSON.stringify({
-        message: `answers: ${fresh.map((a) => a.habitId + " " + a.answer).join(", ")}`,
-        content: strToB64(body),
-        sha: meta.sha,
+        message: "bot: " + path,
+        content: strToB64(JSON.stringify(next, null, 2) + "\n"),
+        sha: sha,
         branch: "main",
       }),
     });
     if (put.ok) return;
-    if (put.status !== 409) throw new Error("write answers.json: HTTP " + put.status);
-    // 409 = someone wrote first; re-read and retry.
+    if (put.status !== 409) throw new Error("write " + path + ": HTTP " + put.status);
   }
-  throw new Error("write answers.json: gave up after conflicts");
+  throw new Error("write " + path + ": gave up after conflicts");
 }
 
-/** Cron job: send whatever is due today and not yet asked. */
+// ---------- расписание привычек (те же правила, что в приложении) ----------
+
+function scheduleType(h) {
+  return (h.scheduleType === "days" || h.scheduleType === "week") ? h.scheduleType : "daily";
+}
+function scheduleDays(h) {
+  return (h.scheduleDays && h.scheduleDays.length) ? h.scheduleDays : [1, 2, 3, 4, 5];
+}
+function weeklyTarget(h) { return Math.max(1, Math.min(7, Number(h.weeklyTarget) || 3)); }
+
+function isScheduledOn(h, date) {
+  if (scheduleType(h) === "days") return scheduleDays(h).indexOf(dateFromStr(date).getDay()) !== -1;
+  return true;
+}
+function weekYesCount(answers, habitId, date) {
+  const start = weekStartOf(date);
+  let n = 0;
+  for (let i = 0; i < 7; i++) {
+    const d = shiftDate(start, i);
+    if (answers.some((a) => a.habitId === habitId && a.date === d && a.answer === "yes")) n++;
+  }
+  return n;
+}
+/** Надо ли сегодня вообще спрашивать про эту привычку. */
+function shouldAskToday(h, answers, date) {
+  if (!isScheduledOn(h, date)) return false;
+  if (scheduleType(h) === "week" && weekYesCount(answers, h.id, date) >= weeklyTarget(h)) return false;
+  return true;
+}
+
+function reminderKeyboard(habitId, date) {
+  return {
+    inline_keyboard: [[
+      { text: "Да", callback_data: `${habitId}|${date}|yes` },
+      { text: "Нет", callback_data: `${habitId}|${date}|no` },
+      { text: "⏸", callback_data: `${habitId}|${date}|skip` },
+    ]],
+  };
+}
+
+// ---------- крон ----------
+
 async function sendDueReminders(env) {
   const { date, hm } = nowParts();
   const log = [];
   const chatId = (await env.STATE.get("chatId")) || DEFAULT_CHAT_ID;
-
-  let habits = [];
-  try {
-    habits = await loadHabits();
-  } catch (e) {
-    log.push("habits load failed: " + e.message);
-    return { date, hm, log };
-  }
+  const habits = await loadRepoJson("habits.json", []);
+  const answers = await loadRepoJson("answers.json", []);
 
   for (const h of habits) {
     if (!h.time || h.time > hm) continue;
+    if (!shouldAskToday(h, answers, date)) continue;
     const key = `asked:${h.id}:${date}`;
     if (await env.STATE.get(key)) continue;
 
     const sent = await tg(env, "sendMessage", {
       chat_id: chatId,
       text: h.message || "Отметьте: " + h.name,
-      reply_markup: {
-        inline_keyboard: [[
-          { text: "Да", callback_data: `${h.id}|${date}|yes` },
-          { text: "Нет", callback_data: `${h.id}|${date}|no` },
-        ]],
-      },
+      reply_markup: reminderKeyboard(h.id, date),
     });
     if (sent && sent.ok) {
       await env.STATE.put(key, "1", { expirationTtl: 60 * 60 * 24 * 3 });
@@ -167,22 +213,52 @@ async function sendDueReminders(env) {
   return { date, hm, log };
 }
 
-/** Fallback for while the webhook is not set up yet (a fresh workers.dev
- *  subdomain can take hours to resolve from Telegram's side). Once the
- *  webhook is live this returns 409 and quietly does nothing. */
+/** Вечерняя сводка: что отмечено за день, один раз в сутки. */
+async function sendEveningSummary(env, date, hm) {
+  if (hm < SUMMARY_TIME) return null;
+  const key = `summary:${date}`;
+  if (await env.STATE.get(key)) return null;
+
+  const habits = await loadRepoJson("habits.json", []);
+  const answers = await loadRepoJson("answers.json", []);
+  const due = habits.filter((h) => shouldAskToday(h, answers, date) || answers.some((a) => a.habitId === h.id && a.date === date));
+  if (!due.length) {
+    await env.STATE.put(key, "1", { expirationTtl: 60 * 60 * 36 });
+    return null;
+  }
+
+  const done = [], missing = [];
+  for (const h of due) {
+    const a = answers.find((x) => x.habitId === h.id && x.date === date);
+    if (a && a.answer === "yes") done.push(h.name);
+    else if (a && a.answer === "skip") continue;
+    else missing.push(h.name);
+  }
+
+  let text = "Итог дня: " + done.length + " из " + (done.length + missing.length) + " ✅";
+  if (done.length) text += "\nСделано: " + done.join(", ");
+  if (missing.length) text += "\nОсталось: " + missing.join(", ");
+
+  const chatId = (await env.STATE.get("chatId")) || DEFAULT_CHAT_ID;
+  await tg(env, "sendMessage", { chat_id: chatId, text: text });
+  await env.STATE.put(key, "1", { expirationTtl: 60 * 60 * 36 });
+  return "summary sent";
+}
+
+/** Запасной опрос, пока вебхук не настроен. При активном вебхуке getUpdates
+ *  возвращает 409 и функция тихо ничего не делает. */
 async function pollUpdates(env) {
   const log = [];
   const lastId = parseInt((await env.STATE.get("lastUpdateId")) || "0", 10);
   const res = await tg(env, "getUpdates", { offset: lastId + 1, timeout: 0 });
-
-  if (!res || !res.ok) return log; // 409 while a webhook is active - fine.
+  if (!res || !res.ok) return log;
 
   let maxId = lastId;
   for (const u of res.result || []) {
     if (u.update_id > maxId) maxId = u.update_id;
     try {
       await handleUpdate(env, u);
-      log.push("polled update " + u.update_id);
+      log.push("polled " + u.update_id);
     } catch (e) {
       log.push("update " + u.update_id + " failed: " + e.message);
     }
@@ -191,59 +267,154 @@ async function pollUpdates(env) {
   return log;
 }
 
-/** Webhook: one update, handled immediately. */
-async function handleUpdate(env, update) {
-  const msg = update.message;
-  if (msg && (msg.text || "").trim() === "/start") {
-    await env.STATE.put("chatId", String(msg.chat.id));
-    await tg(env, "sendMessage", {
-      chat_id: msg.chat.id,
-      text: "Готово! Буду присылать сюда напоминания по привычкам из Prime.",
-    });
-    return;
-  }
-
-  const cq = update.callback_query;
-  if (!cq) return;
-
-  const [habitId, date, answer] = (cq.data || "").split("|");
-  if (!habitId || !date || !answer) return;
-
-  // Answer first so the button stops spinning right away.
-  await tg(env, "answerCallbackQuery", {
-    callback_query_id: cq.id,
-    text: answer === "yes" ? "Отмечено ✅" : "Хорошо, в следующий раз 👍",
-  });
-
-  // Replace the buttons with the recorded choice, so it is visible later.
-  if (cq.message) {
-    await tg(env, "editMessageReplyMarkup", {
-      chat_id: cq.message.chat.id,
-      message_id: cq.message.message_id,
-      reply_markup: {
-        inline_keyboard: [[
-          { text: answer === "yes" ? "✅ Да" : "❌ Нет", callback_data: "done" },
-        ]],
-      },
-    });
-  }
-
-  await appendAnswers(env, [{
-    habitId,
-    date,
-    answer,
-    answeredAt: new Date().toISOString(),
-  }]);
-}
-
 async function tick(env) {
   const result = await sendDueReminders(env);
+  try {
+    const s = await sendEveningSummary(env, result.date, result.hm);
+    if (s) result.log.push(s);
+  } catch (e) {
+    result.log.push("summary failed: " + e.message);
+  }
   try {
     result.log.push(...(await pollUpdates(env)));
   } catch (e) {
     result.log.push("poll failed: " + e.message);
   }
   return result;
+}
+
+// ---------- обработка сообщений ----------
+
+async function recordAnswer(env, habitId, date, answer) {
+  await updateRepoJson(env, "answers.json", (list) => {
+    const i = list.findIndex((a) => a.habitId === habitId && a.date === date);
+    const entry = { habitId, date, answer, answeredAt: new Date().toISOString() };
+    if (i >= 0) {
+      if (list[i].answer === answer) return null; // ничего не изменилось
+      if (list[i].reason) entry.reason = list[i].reason;
+      list[i] = entry;
+    } else {
+      list.push(entry);
+    }
+    return list;
+  });
+}
+
+async function recordReason(env, habitId, date, reason) {
+  await updateRepoJson(env, "answers.json", (list) => {
+    const i = list.findIndex((a) => a.habitId === habitId && a.date === date);
+    if (i < 0) return null;
+    if (list[i].reason === reason) return null;
+    list[i] = Object.assign({}, list[i], { reason: reason });
+    return list;
+  });
+}
+
+/** Строка вида "-250 продукты" или "+3000 зарплата". */
+function parseMoney(text) {
+  const m = String(text).trim().match(/^([+-])\s*(\d+(?:[.,]\d{1,2})?)\s*(.*)$/);
+  if (!m) return null;
+  return {
+    direction: m[1] === "-" ? "out" : "in",
+    amount: parseFloat(m[2].replace(",", ".")),
+    note: (m[3] || "").trim(),
+  };
+}
+
+async function queueMoney(env, parsed, date) {
+  const id = "q_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2, 6);
+  await updateRepoJson(env, "money_queue.json", (list) => {
+    list.push({
+      id: id,
+      direction: parsed.direction,
+      amount: parsed.amount,
+      note: parsed.note,
+      date: date,
+      createdAt: new Date().toISOString(),
+    });
+    return list;
+  });
+  return id;
+}
+
+async function handleUpdate(env, update) {
+  const { date } = nowParts();
+  const msg = update.message;
+
+  if (msg && (msg.text || "").trim() === "/start") {
+    await env.STATE.put("chatId", String(msg.chat.id));
+    await tg(env, "sendMessage", {
+      chat_id: msg.chat.id,
+      text: "Готово! Буду присылать сюда напоминания по привычкам из Prime.\n\n" +
+        "Ещё можно записывать деньги одной строкой: «-250 продукты» или «+3000 зарплата».",
+    });
+    return;
+  }
+
+  if (msg && msg.text) {
+    const money = parseMoney(msg.text);
+    if (money && money.amount > 0) {
+      await queueMoney(env, money, date);
+      await tg(env, "sendMessage", {
+        chat_id: msg.chat.id,
+        text: (money.direction === "out" ? "Записал трату " : "Записал доход ") +
+          money.amount + (money.note ? " — " + money.note : "") +
+          ".\nВ Prime появится в течение часа.",
+      });
+      return;
+    }
+  }
+
+  const cq = update.callback_query;
+  if (!cq) return;
+
+  const parts = (cq.data || "").split("|");
+
+  // Причина пропуска: r|habitId|date|code
+  if (parts[0] === "r" && parts.length === 4) {
+    const reason = (REASONS.find((r) => r.code === parts[3]) || {}).text || parts[3];
+    await tg(env, "answerCallbackQuery", { callback_query_id: cq.id, text: "Понял" });
+    await recordReason(env, parts[1], parts[2], reason);
+    if (cq.message) {
+      await tg(env, "editMessageReplyMarkup", {
+        chat_id: cq.message.chat.id,
+        message_id: cq.message.message_id,
+        reply_markup: { inline_keyboard: [[{ text: "❌ Нет — " + reason, callback_data: "done" }]] },
+      });
+    }
+    return;
+  }
+
+  if (parts.length !== 3) return;
+  const [habitId, answerDate, answer] = parts;
+  if (["yes", "no", "skip"].indexOf(answer) === -1) return;
+
+  const reply = { yes: "Отмечено ✅", no: "Хорошо, бывает", skip: "День заморожен ⏸" }[answer];
+  await tg(env, "answerCallbackQuery", { callback_query_id: cq.id, text: reply });
+  await recordAnswer(env, habitId, answerDate, answer);
+
+  if (cq.message) {
+    if (answer === "no") {
+      // Спрашиваем причину — данные для разбора недели.
+      await tg(env, "editMessageReplyMarkup", {
+        chat_id: cq.message.chat.id,
+        message_id: cq.message.message_id,
+        reply_markup: {
+          inline_keyboard: [
+            REASONS.slice(0, 2).map((r) => ({ text: r.label, callback_data: `r|${habitId}|${answerDate}|${r.code}` })),
+            REASONS.slice(2).map((r) => ({ text: r.label, callback_data: `r|${habitId}|${answerDate}|${r.code}` })),
+          ],
+        },
+      });
+    } else {
+      const mark = answer === "yes" ? "✅ Да" : "⏸ Заморожено";
+      await tg(env, "editMessageReplyMarkup", {
+        chat_id: cq.message.chat.id,
+        message_id: cq.message.message_id,
+        reply_markup: { inline_keyboard: [[{ text: mark, callback_data: "done" }]] },
+      });
+    }
+  }
 }
 
 export default {
@@ -254,7 +425,7 @@ export default {
   async fetch(request, env) {
     const url = new URL(request.url);
 
-    // Telegram pushes updates here.
+    // Telegram пушит апдейты сюда.
     if (request.method === "POST") {
       const got = request.headers.get("X-Telegram-Bot-Api-Secret-Token");
       if (got !== (await webhookSecret(env))) {
@@ -268,7 +439,6 @@ export default {
       return new Response("ok");
     }
 
-    // Manual tick, handy for testing.
     if (url.searchParams.get("run") === "1") {
       try {
         return Response.json(await tick(env));
