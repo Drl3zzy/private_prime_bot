@@ -1,28 +1,30 @@
 /**
  * Prime habit bot - Cloudflare Worker.
  *
- * Runs every minute (cron trigger) and does the whole Telegram side:
- *   1. reads habits.json from this public repo,
- *   2. sends a reminder for every habit whose time has come today,
- *   3. polls Telegram for /start and for Da/Net button presses,
- *   4. appends new answers to answers.json in this repo.
+ * Two entry points:
+ *   - cron (every minute): sends a reminder for every habit in habits.json
+ *     whose time has come today,
+ *   - webhook (POST from Telegram): handles /start and Da/Net button presses
+ *     the instant they happen, and appends answers to answers.json.
  *
  * An hourly Claude Code routine then copies answers.json into Prime's
  * habit_logs. Nothing here talks to Prime directly.
  *
  * Bindings it expects:
- *   STATE               - KV namespace (asked flags, chat id, update cursor)
+ *   STATE               - KV namespace (asked flags, chat id)
  *   TELEGRAM_BOT_TOKEN  - secret, token from @BotFather
  *   GITHUB_TOKEN        - secret, fine-grained PAT with Contents: read and write
+ *
+ * The webhook is authenticated with Telegram's secret_token header, whose
+ * value is a hash of the bot token - so publishing this file leaks nothing.
  */
 
 const REPO = "Drl3zzy/private_prime_bot";
 const TZ = "Europe/Budapest";
 
-// Fallbacks so the bot works right after deploy, before anything is in KV.
-// Both values are already public in this repo's state.json.
+// Fallback so reminders work before anyone has sent /start.
+// Already public in this repo's history.
 const DEFAULT_CHAT_ID = "1057229070";
-const DEFAULT_LAST_UPDATE_ID = "31475228";
 
 function nowParts() {
   const parts = new Intl.DateTimeFormat("en-CA", {
@@ -47,6 +49,14 @@ async function tg(env, method, body) {
   return res.json();
 }
 
+/** Shared secret for the webhook: derived from the bot token, so it is safe
+ *  to keep this code public. Telegram sends it back in a header. */
+async function webhookSecret(env) {
+  const data = new TextEncoder().encode("prime-habit-webhook:" + env.TELEGRAM_BOT_TOKEN);
+  const digest = await crypto.subtle.digest("SHA-256", data);
+  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
 function b64ToStr(b64) {
   const bin = atob(b64.replace(/\s/g, ""));
   const bytes = Uint8Array.from(bin, (c) => c.charCodeAt(0));
@@ -61,7 +71,6 @@ function strToB64(str) {
 }
 
 async function loadHabits() {
-  // Cache-busted so a habit added a minute ago is picked up immediately.
   const res = await fetch(
     `https://raw.githubusercontent.com/${REPO}/main/habits.json?t=${Date.now()}`,
     { cf: { cacheTtl: 0 } }
@@ -70,6 +79,7 @@ async function loadHabits() {
   return res.json();
 }
 
+/** One answer per habit per day wins - pressing the button twice is a no-op. */
 async function appendAnswers(env, added) {
   const url = `https://api.github.com/repos/${REPO}/contents/answers.json`;
   const headers = {
@@ -90,9 +100,14 @@ async function appendAnswers(env, added) {
       existing = [];
     }
 
-    // Skip anything already recorded, so a replayed update can't double-count.
     const seen = new Set(existing.map((a) => `${a.habitId}|${a.date}`));
-    const fresh = added.filter((a) => !seen.has(`${a.habitId}|${a.date}`));
+    const fresh = [];
+    for (const a of added) {
+      const key = `${a.habitId}|${a.date}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      fresh.push(a);
+    }
     if (!fresh.length) return;
 
     const body = JSON.stringify(existing.concat(fresh), null, 2) + "\n";
@@ -108,23 +123,23 @@ async function appendAnswers(env, added) {
     });
     if (put.ok) return;
     if (put.status !== 409) throw new Error("write answers.json: HTTP " + put.status);
-    // 409 = someone else wrote first; re-read and retry.
+    // 409 = someone wrote first; re-read and retry.
   }
   throw new Error("write answers.json: gave up after conflicts");
 }
 
-async function tick(env) {
+/** Cron job: send whatever is due today and not yet asked. */
+async function sendDueReminders(env) {
   const { date, hm } = nowParts();
   const log = [];
-
   const chatId = (await env.STATE.get("chatId")) || DEFAULT_CHAT_ID;
 
-  // 1. Due reminders.
   let habits = [];
   try {
     habits = await loadHabits();
   } catch (e) {
     log.push("habits load failed: " + e.message);
+    return { date, hm, log };
   }
 
   for (const h of habits) {
@@ -149,72 +164,85 @@ async function tick(env) {
       log.push("send failed " + h.id + ": " + JSON.stringify(sent));
     }
   }
+  return { date, hm, log };
+}
 
-  // 2. Incoming updates: /start and button presses.
-  const lastId = parseInt(
-    (await env.STATE.get("lastUpdateId")) || DEFAULT_LAST_UPDATE_ID, 10
-  );
-  const updates = await tg(env, "getUpdates", { offset: lastId + 1, timeout: 0 });
-
-  let maxId = lastId;
-  const answers = [];
-
-  for (const u of (updates && updates.result) || []) {
-    if (u.update_id > maxId) maxId = u.update_id;
-
-    const msg = u.message;
-    if (msg && (msg.text || "").trim() === "/start") {
-      await env.STATE.put("chatId", String(msg.chat.id));
-      await tg(env, "sendMessage", {
-        chat_id: msg.chat.id,
-        text: "Готово! Буду присылать сюда напоминания по привычкам из Prime.",
-      });
-      log.push("start from " + msg.chat.id);
-    }
-
-    const cq = u.callback_query;
-    if (cq) {
-      const [habitId, answerDate, answer] = (cq.data || "").split("|");
-      if (habitId && answerDate && answer) {
-        answers.push({
-          habitId,
-          date: answerDate,
-          answer,
-          answeredAt: new Date().toISOString(),
-        });
-        await tg(env, "answerCallbackQuery", { callback_query_id: cq.id });
-        await tg(env, "sendMessage", {
-          chat_id: cq.message.chat.id,
-          text: answer === "yes" ? "Отмечено ✅" : "Хорошо, в следующий раз 👍",
-        });
-        log.push("answer " + habitId + " " + answer);
-      }
-    }
+/** Webhook: one update, handled immediately. */
+async function handleUpdate(env, update) {
+  const msg = update.message;
+  if (msg && (msg.text || "").trim() === "/start") {
+    await env.STATE.put("chatId", String(msg.chat.id));
+    await tg(env, "sendMessage", {
+      chat_id: msg.chat.id,
+      text: "Готово! Буду присылать сюда напоминания по привычкам из Prime.",
+    });
+    return;
   }
 
-  // Only write when it actually moved - KV free tier allows ~1k writes/day.
-  if (maxId !== lastId) await env.STATE.put("lastUpdateId", String(maxId));
-  if (answers.length) await appendAnswers(env, answers);
+  const cq = update.callback_query;
+  if (!cq) return;
 
-  return { date, hm, log };
+  const [habitId, date, answer] = (cq.data || "").split("|");
+  if (!habitId || !date || !answer) return;
+
+  // Answer first so the button stops spinning right away.
+  await tg(env, "answerCallbackQuery", {
+    callback_query_id: cq.id,
+    text: answer === "yes" ? "Отмечено ✅" : "Хорошо, в следующий раз 👍",
+  });
+
+  // Replace the buttons with the recorded choice, so it is visible later.
+  if (cq.message) {
+    await tg(env, "editMessageReplyMarkup", {
+      chat_id: cq.message.chat.id,
+      message_id: cq.message.message_id,
+      reply_markup: {
+        inline_keyboard: [[
+          { text: answer === "yes" ? "✅ Да" : "❌ Нет", callback_data: "done" },
+        ]],
+      },
+    });
+  }
+
+  await appendAnswers(env, [{
+    habitId,
+    date,
+    answer,
+    answeredAt: new Date().toISOString(),
+  }]);
 }
 
 export default {
   async scheduled(event, env, ctx) {
-    ctx.waitUntil(tick(env));
+    ctx.waitUntil(sendDueReminders(env));
   },
 
-  // Opening the worker URL with ?run=1 forces a tick - handy for testing.
   async fetch(request, env) {
     const url = new URL(request.url);
-    if (url.searchParams.get("run") !== "1") {
-      return new Response("Prime habit bot worker. Add ?run=1 to force a tick.");
+
+    // Telegram pushes updates here.
+    if (request.method === "POST") {
+      const got = request.headers.get("X-Telegram-Bot-Api-Secret-Token");
+      if (got !== (await webhookSecret(env))) {
+        return new Response("forbidden", { status: 403 });
+      }
+      try {
+        await handleUpdate(env, await request.json());
+      } catch (e) {
+        console.log("update failed: " + e.message);
+      }
+      return new Response("ok");
     }
-    try {
-      const result = await tick(env);
-      return Response.json(result);
-    } catch (e) {
-      return new Response("error: " + e.message, { status: 500 });
+
+    // Manual reminder tick, handy for testing.
+    if (url.searchParams.get("run") === "1") {
+      try {
+        return Response.json(await sendDueReminders(env));
+      } catch (e) {
+        return new Response("error: " + e.message, { status: 500 });
+      }
     }
+
+    return new Response("Prime habit bot worker. Add ?run=1 to force a tick.");
   },
 };
