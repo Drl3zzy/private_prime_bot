@@ -337,6 +337,102 @@ async function queueMoney(env, parsed, date) {
   return id;
 }
 
+const HELP_TEXT =
+  "Что я умею:\n\n" +
+  "/список — показать напоминания\n" +
+  "/добавить 07:00 Чистка зубов — новое напоминание\n" +
+  "/время 1 08:30 — поменять время у №1\n" +
+  "/удалить 1 — убрать №1\n\n" +
+  "Ещё записываю деньги одной строкой: «-250 продукты» или «+3000 зарплата».";
+
+function habitLine(h, i) {
+  let when = "каждый день";
+  if (h.scheduleType === "days") {
+    const names = ["вс", "пн", "вт", "ср", "чт", "пт", "сб"];
+    when = (h.scheduleDays || [1, 2, 3, 4, 5]).map((n) => names[n]).join(", ");
+  } else if (h.scheduleType === "week") {
+    when = (h.weeklyTarget || 3) + " раз в неделю";
+  }
+  return (i + 1) + ". " + (h.time || "--:--") + " — " + h.name + " (" + when + ")";
+}
+
+async function habitsListText(habits) {
+  if (!habits.length) return "Напоминаний пока нет.\n\nДобавить: /добавить 07:00 Чистка зубов";
+  return "Напоминания бота:\n\n" + habits.map(habitLine).join("\n") +
+    "\n\nПоменять время: /время 1 08:30\nУбрать: /удалить 1";
+}
+
+/** Команды управления напоминаниями. Возвращает true, если сообщение обработано. */
+async function handleCommand(env, chatId, text) {
+  const raw = text.trim();
+  if (raw.charAt(0) !== "/") return false;
+  const parts = raw.split(/\s+/);
+  const cmd = parts[0].toLowerCase().replace(/@.*$/, "");
+  const say = (t) => tg(env, "sendMessage", { chat_id: chatId, text: t });
+
+  if (cmd === "/помощь" || cmd === "/help") { await say(HELP_TEXT); return true; }
+
+  if (cmd === "/список" || cmd === "/list") {
+    const habits = await loadRepoJson("habits.json", []);
+    await say(await habitsListText(habits));
+    return true;
+  }
+
+  if (cmd === "/добавить" || cmd === "/add") {
+    const time = parts[1] || "";
+    const name = parts.slice(2).join(" ").trim();
+    if (!/^\d{1,2}:\d{2}$/.test(time) || !name) {
+      await say("Формат: /добавить 07:00 Чистка зубов");
+      return true;
+    }
+    const hhmm = ("0" + time).slice(-5);
+    const id = "tg_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2, 6);
+    await updateRepoJson(env, "habits.json", (list) => {
+      list.push({ id, name, message: "Отметьте: " + name, time: hhmm, scheduleType: "daily", identity: "" });
+      return list;
+    });
+    await say("Добавил: " + hhmm + " — " + name + ".\nВ Prime появится в течение часа.");
+    return true;
+  }
+
+  if (cmd === "/время" || cmd === "/time") {
+    const idx = parseInt(parts[1], 10) - 1;
+    const time = parts[2] || "";
+    if (!(idx >= 0) || !/^\d{1,2}:\d{2}$/.test(time)) {
+      await say("Формат: /время 1 08:30\nНомер смотрите в /список");
+      return true;
+    }
+    const hhmm = ("0" + time).slice(-5);
+    let changed = null;
+    await updateRepoJson(env, "habits.json", (list) => {
+      if (!list[idx]) return null;
+      list[idx].time = hhmm;
+      changed = list[idx].name;
+      return list;
+    });
+    await say(changed ? ("Готово: «" + changed + "» теперь в " + hhmm + ".") : "Нет напоминания с таким номером — посмотрите /список");
+    return true;
+  }
+
+  if (cmd === "/удалить" || cmd === "/del") {
+    const idx = parseInt(parts[1], 10) - 1;
+    if (!(idx >= 0)) { await say("Формат: /удалить 1\nНомер смотрите в /список"); return true; }
+    let removed = null;
+    await updateRepoJson(env, "habits.json", (list) => {
+      if (!list[idx]) return null;
+      removed = list[idx].name;
+      list.splice(idx, 1);
+      return list;
+    });
+    await say(removed
+      ? ("Убрал напоминание «" + removed + "». В Prime сама привычка и её история остаются — удалите её там, если она больше не нужна.")
+      : "Нет напоминания с таким номером — посмотрите /список");
+    return true;
+  }
+
+  return false;
+}
+
 async function handleUpdate(env, update) {
   const { date } = nowParts();
   const msg = update.message;
@@ -345,13 +441,14 @@ async function handleUpdate(env, update) {
     await env.STATE.put("chatId", String(msg.chat.id));
     await tg(env, "sendMessage", {
       chat_id: msg.chat.id,
-      text: "Готово! Буду присылать сюда напоминания по привычкам из Prime.\n\n" +
-        "Ещё можно записывать деньги одной строкой: «-250 продукты» или «+3000 зарплата».",
+      text: "Готово! Буду присылать сюда напоминания по привычкам.\n\n" + HELP_TEXT,
     });
     return;
   }
 
   if (msg && msg.text) {
+    if (await handleCommand(env, msg.chat.id, msg.text)) return;
+
     const money = parseMoney(msg.text);
     if (money && money.amount > 0) {
       await queueMoney(env, money, date);
