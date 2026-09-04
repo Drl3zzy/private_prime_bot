@@ -6,5 +6,13 @@
     "time": "07:00",
     "scheduleType": "daily",
     "identity": "Чтобы быть человеком у которого нету проблем с зубами"
+  },
+  {
+    "id": "tg_mtn75gpp_9l5h",
+    "name": "Тестовое напоминание",
+    "message": "Отметьте: Тестовое напоминание",
+    "time": "21:00",
+    "scheduleType": "daily",
+    "identity": ""
   }
 ]
