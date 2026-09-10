@@ -46,5 +46,13 @@
     "note": "кофе",
     "date": "2026-09-10",
     "createdAt": "2026-09-10T09:27:16.375Z"
+  },
+  {
+    "id": "q_mtvbq1wp_ah9c",
+    "direction": "out",
+    "amount": 180,
+    "note": "обед",
+    "date": "2026-09-10",
+    "createdAt": "2026-09-10T09:27:20.892Z"
   }
 ]
