@@ -70,5 +70,13 @@
     "note": "кофе",
     "date": "2026-09-11",
     "createdAt": "2026-09-11T06:09:20.900Z"
+  },
+  {
+    "id": "q_mtxgfyp2_dgqy",
+    "direction": "out",
+    "amount": 205,
+    "note": "обед",
+    "date": "2026-09-11",
+    "createdAt": "2026-09-11T21:15:00.614Z"
   }
 ]
