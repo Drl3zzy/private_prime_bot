@@ -22,7 +22,7 @@
 
 const REPO = "Drl3zzy/private_prime_bot";
 const TZ = "Europe/Budapest";
-const SUMMARY_TIME = "21:30";
+const SUMMARY_TIME = "22:35"; // после чтения 22:00–22:30, чтобы итог считал весь вечер
 
 // Fallback so reminders work before anyone has sent /start.
 // Already public in this repo's history.
