@@ -35,5 +35,16 @@
     "message": "Отметьте: Чтение 22:00–22:30",
     "time": "22:00",
     "scheduleType": "daily"
+  },
+  {
+    "id": "english_mon_thu",
+    "name": "Английский 19:00–20:00",
+    "message": "Отметьте: Английский 19:00–20:00",
+    "time": "19:00",
+    "scheduleType": "days",
+    "scheduleDays": [
+      1,
+      4
+    ]
   }
 ]
