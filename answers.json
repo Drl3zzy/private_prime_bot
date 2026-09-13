@@ -51,6 +51,7 @@
     "habitId": "morning_vitamins",
     "date": "2026-09-13",
     "answer": "no",
-    "answeredAt": "2026-09-13T19:07:01.734Z"
+    "answeredAt": "2026-09-13T19:07:01.734Z",
+    "reason": "другое"
   }
 ]
