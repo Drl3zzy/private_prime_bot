@@ -14,5 +14,19 @@
     "time": "21:30",
     "scheduleType": "daily",
     "identity": "Чтобы быть человеком у которого нету проблем с зубами"
+  },
+  {
+    "id": "morning_vitamins",
+    "name": "Утренние витамины",
+    "message": "Отметьте: Утренние витамины",
+    "time": "06:15",
+    "scheduleType": "daily"
+  },
+  {
+    "id": "evening_vitamins",
+    "name": "Вечерние витамины",
+    "message": "Отметьте: Вечерние витамины",
+    "time": "21:45",
+    "scheduleType": "daily"
   }
 ]
