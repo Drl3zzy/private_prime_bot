@@ -19,7 +19,7 @@
     "id": "morning_vitamins",
     "name": "Утренние витамины",
     "message": "Отметьте: Утренние витамины",
-    "time": "06:15",
+    "time": "06:45",
     "scheduleType": "daily"
   },
   {
@@ -27,6 +27,13 @@
     "name": "Вечерние витамины",
     "message": "Отметьте: Вечерние витамины",
     "time": "21:45",
+    "scheduleType": "daily"
+  },
+  {
+    "id": "evening_reading",
+    "name": "Чтение 22:00–22:30",
+    "message": "Отметьте: Чтение 22:00–22:30",
+    "time": "22:00",
     "scheduleType": "daily"
   }
 ]
