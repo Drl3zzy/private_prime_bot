@@ -46,5 +46,12 @@
       1,
       4
     ]
+  },
+  {
+    "id": "evening_prayer",
+    "name": "Вечерняя молитва",
+    "message": "Отметьте: Вечерняя молитва",
+    "time": "21:55",
+    "scheduleType": "daily"
   }
 ]
