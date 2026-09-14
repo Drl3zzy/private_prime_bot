@@ -119,6 +119,7 @@
     "habitId": "evening_reading",
     "date": "2026-09-14",
     "answer": "no",
-    "answeredAt": "2026-09-14T20:28:07.308Z"
+    "answeredAt": "2026-09-14T20:28:07.308Z",
+    "reason": "не было времени"
   }
 ]
