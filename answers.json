@@ -121,5 +121,11 @@
     "answer": "no",
     "answeredAt": "2026-09-14T20:28:07.308Z",
     "reason": "не было времени"
+  },
+  {
+    "habitId": "morning_vitamins",
+    "date": "2026-09-15",
+    "answer": "yes",
+    "answeredAt": "2026-09-15T04:46:06.901Z"
   }
 ]
