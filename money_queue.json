@@ -94,5 +94,13 @@
     "note": "обед",
     "date": "2026-09-14",
     "createdAt": "2026-09-14T09:38:38.585Z"
+  },
+  {
+    "id": "q_mu2h74qd_khzr",
+    "direction": "out",
+    "amount": 55,
+    "note": "кофе",
+    "date": "2026-09-15",
+    "createdAt": "2026-09-15T09:34:59.058Z"
   }
 ]
