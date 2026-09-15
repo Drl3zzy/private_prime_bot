@@ -139,5 +139,11 @@
     "date": "2026-09-15",
     "answer": "yes",
     "answeredAt": "2026-09-15T19:48:14.122Z"
+  },
+  {
+    "habitId": "evening_vitamins",
+    "date": "2026-09-15",
+    "answer": "yes",
+    "answeredAt": "2026-09-15T19:48:16.134Z"
   }
 ]
