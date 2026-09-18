@@ -237,5 +237,11 @@
     "date": "2026-09-18",
     "answer": "yes",
     "answeredAt": "2026-09-18T20:01:10.392Z"
+  },
+  {
+    "habitId": "evening_prayer",
+    "date": "2026-09-18",
+    "answer": "yes",
+    "answeredAt": "2026-09-18T20:01:11.835Z"
   }
 ]
