@@ -213,5 +213,11 @@
     "date": "2026-09-17",
     "answer": "yes",
     "answeredAt": "2026-09-17T18:01:07.518Z"
+  },
+  {
+    "habitId": "morning_vitamins",
+    "date": "2026-09-18",
+    "answer": "yes",
+    "answeredAt": "2026-09-18T20:01:05.578Z"
   }
 ]
