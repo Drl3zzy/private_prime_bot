@@ -273,5 +273,11 @@
     "date": "2026-09-19",
     "answer": "yes",
     "answeredAt": "2026-09-21T09:11:38.179Z"
+  },
+  {
+    "habitId": "evening_reading",
+    "date": "2026-09-19",
+    "answer": "no",
+    "answeredAt": "2026-09-21T09:11:39.479Z"
   }
 ]
