@@ -336,6 +336,7 @@
     "habitId": "english_mon_thu",
     "date": "2026-09-21",
     "answer": "no",
-    "answeredAt": "2026-09-21T17:01:12.191Z"
+    "answeredAt": "2026-09-21T17:01:12.191Z",
+    "reason": "забыл"
   }
 ]
