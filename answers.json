@@ -316,6 +316,7 @@
     "habitId": "evening_reading",
     "date": "2026-09-20",
     "answer": "no",
-    "answeredAt": "2026-09-21T09:11:57.928Z"
+    "answeredAt": "2026-09-21T09:11:57.928Z",
+    "reason": "забыл"
   }
 ]
