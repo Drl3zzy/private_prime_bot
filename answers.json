@@ -331,5 +331,11 @@
     "answer": "no",
     "answeredAt": "2026-09-21T09:12:04.917Z",
     "reason": "другое"
+  },
+  {
+    "habitId": "english_mon_thu",
+    "date": "2026-09-21",
+    "answer": "no",
+    "answeredAt": "2026-09-21T17:01:12.191Z"
   }
 ]
