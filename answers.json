@@ -379,7 +379,8 @@
     "habitId": "evening_vitamins",
     "date": "2026-09-22",
     "answer": "no",
-    "answeredAt": "2026-09-22T20:58:04.710Z"
+    "answeredAt": "2026-09-22T20:58:04.710Z",
+    "reason": "забыл"
   },
   {
     "habitId": "evening_teeth_workout",
