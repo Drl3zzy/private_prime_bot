@@ -380,5 +380,11 @@
     "date": "2026-09-22",
     "answer": "no",
     "answeredAt": "2026-09-22T20:58:04.710Z"
+  },
+  {
+    "habitId": "evening_teeth_workout",
+    "date": "2026-09-22",
+    "answer": "yes",
+    "answeredAt": "2026-09-22T20:58:06.082Z"
   }
 ]
