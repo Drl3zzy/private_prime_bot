@@ -338,5 +338,11 @@
     "answer": "no",
     "answeredAt": "2026-09-21T17:01:12.191Z",
     "reason": "забыл"
+  },
+  {
+    "habitId": "evening_teeth_workout",
+    "date": "2026-09-21",
+    "answer": "yes",
+    "answeredAt": "2026-09-22T08:02:28.886Z"
   }
 ]
