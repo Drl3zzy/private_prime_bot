@@ -442,6 +442,7 @@
     "habitId": "english_mon_thu",
     "date": "2026-09-24",
     "answer": "no",
-    "answeredAt": "2026-09-24T17:51:46.067Z"
+    "answeredAt": "2026-09-24T17:51:46.067Z",
+    "reason": "другое"
   }
 ]
